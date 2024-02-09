@@ -1,4 +1,4 @@
-﻿using BepInEx;
+using BepInEx;
 using GameNetcodeStuff;
 using HarmonyLib;
 using System;
@@ -24,7 +24,7 @@ namespace LCPeeper
     {
         private const string modGUID = "x753.Peepers";
         private const string modName = "Peepers";
-        private const string modVersion = "0.9.2";
+        private const string modVersion = "0.9.4";
 
         private readonly Harmony harmony = new Harmony(modGUID);
 
@@ -37,6 +37,8 @@ namespace LCPeeper
 		public static int PeeperCreatureID = 0;
 
 		public static List<PeeperAI> PeeperList = new List<PeeperAI>();
+
+		public static List<string> ignoreEnemies = new List<string> { "Peeper", "Manticoil", "Docile Locust Bees", "Girl" };
 
 		public static float PeeperSpawnChance;
 		public static int PeeperMinGroupSize;
@@ -185,7 +187,7 @@ namespace LCPeeper
         {
             foreach (SelectableLevel level in __instance.levels)
             {
-                if (!level.Enemies.Any(e => e.enemyType == Peeper.PeeperType))
+                if (!level.DaytimeEnemies.Any(e => e.enemyType == Peeper.PeeperType))
                 {
                     int rarity = 0;
                     level.DaytimeEnemies.Add(new SpawnableEnemyWithRarity()
@@ -459,6 +461,9 @@ namespace LCPeeper
 		public AudioClip[] deathSFX;
 		public AudioClip[] ejectSFX;
 		public AudioClip[] zapSFX;
+		public AudioClip[] whisperSFX;
+
+		public static float NextWhisperTime;
 
 		[Header("Materials")]
 		public Material baseMat;
@@ -829,6 +834,8 @@ namespace LCPeeper
 
 					this.hitboxCollider.radius = 0.5f;
 					this.hitboxCollider.center = Vector3.zero;
+
+					NextWhisperTime = Time.time + 10f;
 					break;
 				case 5: // Recovery State
 					
@@ -988,7 +995,7 @@ namespace LCPeeper
 
 						if (angle < 90f)
 						{
-							this.eyeTransform.rotation = Quaternion.RotateTowards(this.eyeTransform.rotation, limitedDesiredRotation, 100f * Time.deltaTime); // make eye look towards target
+							this.eyeTransform.rotation = Quaternion.RotateTowards(this.eyeTransform.rotation, limitedDesiredRotation, 120f * Time.deltaTime); // make eye look towards target
 							return;
 						}
 					}
@@ -1022,7 +1029,7 @@ namespace LCPeeper
 
 				PlayerControllerB p = base.CheckLineOfSightForClosestPlayer(70f, sightRange, 3);
 				if (p == null) { return; }
-				if(Vector3.Distance(base.eye.position, p.gameplayCamera.transform.position) > sightRange) { return; } 
+				if (Vector3.Distance(base.eye.position, p.gameplayCamera.transform.position) > sightRange) { return; }
 
 				PlayCreatureSFXServerRpc(0);
 				BeginChasingPlayerServerRpc((int)p.playerClientId);
@@ -1065,7 +1072,7 @@ namespace LCPeeper
 
 				PlayerControllerB p = base.CheckLineOfSightForClosestPlayer(70f, sightRange, 3); // check if a player is still in sight
 
-				if (p == null || (Vector3.Distance(base.eye.position, p.gameplayCamera.transform.position) > sightRange) )
+				if (p == null || (Vector3.Distance(base.eye.position, p.gameplayCamera.transform.position) > sightRange))
 				{
 					stateCounter++;
 					if (stateCounter < 8) { return; }
@@ -1139,7 +1146,31 @@ namespace LCPeeper
 			}
 			else if (this.currentBehaviourStateIndex == 4) // Attached State
 			{
-				base.SyncPositionToClients();
+				if (this.IsOwner)
+				{
+					base.SyncPositionToClients();
+				}
+
+				this.stateTimer += Time.deltaTime;
+				if (this.stateTimer < 1f) { return; }
+				this.stateTimer = 0f;
+
+				if (Time.time < NextWhisperTime) { return; }
+				NextWhisperTime = Time.time + 10f;
+
+                Collider[] colliders = Physics.OverlapSphere(this.transform.position, 16f, LayerMask.GetMask("Enemies"), QueryTriggerInteraction.Collide);
+                foreach (Collider collider in colliders)
+                {
+                    EnemyAI enemyAI = collider.gameObject.GetComponentInParent<EnemyAI>();
+                    if (enemyAI != null && !Peeper.ignoreEnemies.Contains(enemyAI.enemyType.enemyName))
+                    {
+						PlayCreatureSFXServerRpc(7, 1f); // whisper
+						NextWhisperTime = Time.time + UnityEngine.Random.Range(6f, 12f); // wait 10 seconds before whispering again
+						return;
+					}
+                }
+
+				NextWhisperTime = Time.time + 1f; // check for an enemy every second if we didn't see one
 			}
 			else if (this.currentBehaviourStateIndex == 5) // Recovery State
 			{
@@ -1203,8 +1234,6 @@ namespace LCPeeper
 			if (base.isEnemyDead) { return; }
 			if (this.isAttached) { return; }
 
-			Debug.Log("Peeper JumpAtPlayer 1");
-
 			base.agent.speed = 0f;
 			
 			this.creatureModel.transform.localPosition = Vector3.zero;
@@ -1226,8 +1255,6 @@ namespace LCPeeper
 
 			this.hitboxCollider.radius = 2f; // They're too fast to hit normally, make their hitboxes larger when they're jumping so you can perfect counter them
 
-			Debug.Log("Peeper JumpAtPlayer 2");
-
 			Vector3 targetPosition = playerScript.playerGlobalHead.transform.position;
 
 			// Predict where the player is moving when jumping at them
@@ -1239,8 +1266,6 @@ namespace LCPeeper
             {
                 targetPosition += Vector3.Normalize((this.targetPlayer.serverPlayerPosition - this.targetPlayer.oldPlayerPosition) * 100f);
             }
-
-			Debug.Log("Peeper JumpAtPlayer 3");
 
 			this.physicsRigidbody.velocity = 33f * (targetPosition - this.transform.position + Vector3.up).normalized;
 
@@ -1319,6 +1344,12 @@ namespace LCPeeper
 					this.creatureVoice.PlayOneShot(clip, volume);
 					WalkieTalkie.TransmitOneShotAudio(this.creatureVoice, clip, volume);
 					break;
+				case 7: // whisperSFX
+					clip = this.whisperSFX[UnityEngine.Random.Range(0, this.whisperSFX.Length)];
+					this.AttachSFXSource.PlayOneShot(clip, volume);
+					WalkieTalkie.TransmitOneShotAudio(this.AttachSFXSource, clip, volume);
+					RoundManager.Instance.PlayAudibleNoise(this.transform.position, 18f, 0.6f, 0, false, 0);
+					break;
 				default:
 					break;
 			}
@@ -1341,6 +1372,10 @@ namespace LCPeeper
 				else if (value == false && this.isWeightedInternal == true)
 				{
 					this.attachedPlayer.carryWeight += -peeperWeight;
+					if (this.attachedPlayer.carryWeight < 1f)
+					{
+						this.attachedPlayer.carryWeight = 1f;
+					}
 				}
 				this.isWeightedInternal = value;
 			}

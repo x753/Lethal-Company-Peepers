@@ -16,6 +16,7 @@ using System.Linq;
 using Unity.Netcode.Components;
 using Unity.Netcode.Samples;
 using UnityEngine.AI;
+using System.Reflection.Emit;
 
 namespace LCPeeper
 {
@@ -24,7 +25,7 @@ namespace LCPeeper
     {
         private const string modGUID = "x753.Peepers";
         private const string modName = "Peepers";
-        private const string modVersion = "0.9.4";
+        private const string modVersion = "0.9.6";
 
         private readonly Harmony harmony = new Harmony(modGUID);
 
@@ -43,6 +44,8 @@ namespace LCPeeper
 		public static float PeeperSpawnChance;
 		public static int PeeperMinGroupSize;
 		public static int PeeperMaxGroupSize;
+
+		public static float PeeperWeight;
 
         private void Awake()
         {
@@ -64,6 +67,8 @@ namespace LCPeeper
 				PeeperSpawnChance = Config.Bind("Spawn Rate", "Hourly Spawn Chance (%)", 10f, "Chance of a group of peepers spawning each hour").Value;
 				PeeperMinGroupSize = Config.Bind("Spawn Rate", "Minimum Peeper Group Size", 2, "The minimum number of peepers in a single group").Value;
 				PeeperMaxGroupSize = Config.Bind("Spawn Rate", "Maximum Peeper Group Size", 4, "The maximum number of peepers in a single group").Value;
+
+				PeeperWeight = Config.Bind("Peeper Settings", "Peeper Weight (lb)", 10f, "The weight of a single peeper in pounds.").Value / 105f;
 			}
 
 			// UnityNetcodeWeaver patch requires this
@@ -257,6 +262,46 @@ namespace LCPeeper
 		}
 	}
 
+	// https://github.com/Malcolm-Q/LC-LateGameUpgrades/blob/d1c0c42c8e35294626466aa11773a877bcaa7ea6/MoreShipUpgrades/Patches/Enemies/SpringManAIPatcher.cs
+	[HarmonyPatch(typeof(SpringManAI))]
+	internal class SpringManAIPatcher
+	{
+		[HarmonyPrefix]
+		[HarmonyPatch(nameof(SpringManAI.DoAIInterval))]
+		private static void DoAllIntervalPrefix(ref SpringManAI __instance)
+		{
+			if (PeeperAI.HasLineOfSightToPeeper(__instance.transform.position))
+			{
+				__instance.currentBehaviourStateIndex = 1;
+			}
+		}
+		[HarmonyTranspiler]
+		[HarmonyPatch(nameof(SpringManAI.Update))]
+		private static IEnumerable<CodeInstruction> Update_Transpiler(IEnumerable<CodeInstruction> instructions)
+		{
+			MethodInfo peeperMethod = typeof(PeeperAI).GetMethod("HasLineOfSightToPeeper", BindingFlags.Public | BindingFlags.Static);
+			MethodInfo transformMethod = typeof(SpringManAI).GetMethod("get_transform");
+			MethodInfo positionMethod = typeof(UnityEngine.Transform).GetMethod("get_position");
+
+			List<CodeInstruction> codes = new List<CodeInstruction>(instructions);
+			for (int i = 1; i < codes.Count; i++)
+			{
+				if (codes[i - 1].opcode != OpCodes.Ldc_I4_0) continue;
+				if (codes[i].opcode != OpCodes.Stloc_1) continue;
+
+				codes.Insert(i, new CodeInstruction(OpCodes.Or));
+				codes.Insert(i, new CodeInstruction(OpCodes.Call, peeperMethod));
+				codes.Insert(i, new CodeInstruction(OpCodes.Callvirt, positionMethod));
+				codes.Insert(i, new CodeInstruction(OpCodes.Call, transformMethod));
+				codes.Insert(i, new CodeInstruction(OpCodes.Ldarg_0));
+
+				break;
+			}
+
+			return codes;
+		}
+	}
+
 	[HarmonyPatch(typeof(SprayPaintItem))]
 	internal class SprayPaintItemPatch
 	{
@@ -406,7 +451,24 @@ namespace LCPeeper
                 }
             }
         }
-    }
+		[HarmonyPatch("DropAllHeldItems")]
+		[HarmonyPostfix]
+		static void DamagePlayeDropAllHeldItemsPatch(PlayerControllerB __instance, bool itemsFall = true, bool disconnecting = false)
+		{
+			// Weight is set to 1f by the teleporter, add the Peeper weights back on!
+			if (__instance.carryWeight == 1f)
+			{
+				List<PeeperAI> allPeepers = new List<PeeperAI>(Peeper.PeeperList);
+				foreach (PeeperAI peeper in allPeepers)
+				{
+					if (peeper.attachedPlayer == __instance && peeper.isAttached && !peeper.isEnemyDead)
+					{
+						__instance.carryWeight += Peeper.PeeperWeight;
+					}
+				}
+			}
+		}
+	}
 
 	public class PeeperAI : EnemyAI
 	{
@@ -1288,7 +1350,10 @@ namespace LCPeeper
 		{
 			PlayerControllerB playerScript = StartOfRound.Instance.allPlayerScripts[playerObjectId];
 			base.targetPlayer = playerScript;
-			base.ChangeOwnershipOfEnemy((ulong)playerObjectId);
+			if (base.OwnerClientId != (ulong)playerObjectId)
+			{
+				base.ChangeOwnershipOfEnemy((ulong)playerObjectId);
+			}
 			base.SetMovingTowardsTargetPlayer(playerScript);
 		}
 
@@ -1355,7 +1420,6 @@ namespace LCPeeper
 			}
 		}
 
-		private float peeperWeight = 0.1f;
 		private bool isWeightedInternal = false;
 		public bool IsWeighted
 		{
@@ -1367,11 +1431,11 @@ namespace LCPeeper
 			{
 				if (value == true && this.isWeightedInternal == false)
 				{
-					this.attachedPlayer.carryWeight += peeperWeight;
+					this.attachedPlayer.carryWeight += Peeper.PeeperWeight;
 				}
 				else if (value == false && this.isWeightedInternal == true)
 				{
-					this.attachedPlayer.carryWeight += -peeperWeight;
+					this.attachedPlayer.carryWeight += -Peeper.PeeperWeight;
 					if (this.attachedPlayer.carryWeight < 1f)
 					{
 						this.attachedPlayer.carryWeight = 1f;
@@ -1576,7 +1640,25 @@ namespace LCPeeper
 
 			PlayCreatureSFX(6);
         }
-	}
+
+        public static bool HasLineOfSightToPeeper(Vector3 position)
+        {
+			foreach (PeeperAI peeper in Peeper.PeeperList)
+			{
+				if (peeper != null)
+				{
+					Vector3 directionToTarget = position - peeper.eyeTransform.position;
+					float angle = Vector3.Angle(peeper.eyeOriginalTransform.forward, directionToTarget);
+
+					if (Vector3.Distance(position, peeper.eyeTransform.position) < 10f && angle < 60f && !Physics.Linecast(peeper.eyeTransform.transform.position, position, StartOfRound.Instance.collidersRoomDefaultAndFoliage, QueryTriggerInteraction.Ignore))
+					{
+						return true;
+					}
+				}
+			}
+			return false;
+        }
+    }
 
 	public class PeeperAttachHitbox : MonoBehaviour
 	{

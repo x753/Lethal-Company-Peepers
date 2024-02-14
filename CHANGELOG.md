@@ -1,3 +1,9 @@
+## v0.9.6 Pre-release
+- Added config for peeper weight, fixed teleporter setting weight to 0
+
+## v0.9.5 Pre-release
+- Peepers now watch coil heads
+
 ## v0.9.4 Pre-release
 - Fixed server RPC logging issue
 

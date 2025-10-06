@@ -1,20 +1,13 @@
-using BepInEx;
+﻿using BepInEx;
 using GameNetcodeStuff;
 using HarmonyLib;
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using System.Reflection;
 using Unity.Netcode;
 using UnityEngine;
-using UnityEngine.Animations;
-using UnityEngine.Events;
 using UnityEngine.Audio;
-using BepInEx.Configuration;
 using System.Linq;
-using Unity.Netcode.Components;
-using Unity.Netcode.Samples;
 using UnityEngine.AI;
 using System.Reflection.Emit;
 
@@ -25,7 +18,7 @@ namespace LCPeeper
     {
         private const string modGUID = "x753.Peepers";
         private const string modName = "Peepers";
-        private const string modVersion = "0.9.6";
+        private const string modVersion = "1.0.4";
 
         private readonly Harmony harmony = new Harmony(modGUID);
 
@@ -39,9 +32,9 @@ namespace LCPeeper
 
 		public static List<PeeperAI> PeeperList = new List<PeeperAI>();
 
-		public static List<string> ignoreEnemies = new List<string> { "Peeper", "Manticoil", "Docile Locust Bees", "Girl" };
+		public static List<string> ignoreEnemies = new List<string> { "Peeper", "Manticoil", "Docile Locust Bees", "Girl", "Tulip Snake"};
 
-		public static float PeeperSpawnChance;
+		public static Dictionary<string, float> PeeperSpawnChances = new Dictionary<string, float>();
 		public static int PeeperMinGroupSize;
 		public static int PeeperMaxGroupSize;
 
@@ -64,11 +57,36 @@ namespace LCPeeper
 
 			// Handle configs
 			{
-				PeeperSpawnChance = Config.Bind("Spawn Rate", "Hourly Spawn Chance (%)", 10f, "Chance of a group of peepers spawning each hour").Value;
+				string peeperSpawnChancesString = Config.Bind("Spawn Rate", "Hourly Spawn Chance", "All:5,Titan:0,Embrion:0", "Comma-separated list of moons and numbers that determines the % chance of a group of peepers spawning every hour. The keyword 'All' will determine the spawn chance for all moons not listed").Value;
+
+				string[] peeperSpawnChancesStrings = peeperSpawnChancesString.Split(',');
+
+				foreach (string pair in peeperSpawnChancesStrings)
+				{
+					string[] parts = pair.Split(':');
+
+					if (parts.Length == 2)
+					{
+						string moonName = parts[0].ToLower();
+						float spawnRate;
+
+						if (float.TryParse(parts[1], out spawnRate))
+						{
+							// Add the moon name and spawn rate to the dictionary
+							PeeperSpawnChances.Add(moonName, spawnRate);
+						}
+						else
+						{
+							Debug.Log("Peepers config has an invalid float value for " + moonName);
+						}
+					}
+				}
+
 				PeeperMinGroupSize = Config.Bind("Spawn Rate", "Minimum Peeper Group Size", 2, "The minimum number of peepers in a single group").Value;
 				PeeperMaxGroupSize = Config.Bind("Spawn Rate", "Maximum Peeper Group Size", 4, "The maximum number of peepers in a single group").Value;
 
-				PeeperWeight = Config.Bind("Peeper Settings", "Peeper Weight (lb)", 10f, "The weight of a single peeper in pounds.").Value / 105f;
+				PeeperWeight = Config.Bind("Peeper Settings", "Peeper Weight (lb)", 8f, "The weight of a single peeper in pounds.").Value / 105f;
+
 			}
 
 			// UnityNetcodeWeaver patch requires this
@@ -144,8 +162,17 @@ namespace LCPeeper
 		[HarmonyPrefix]
 		static void AdvanceHourAndSpawnNewBatchOfEnemiesPatch(RoundManager __instance)
 		{
+			float spawnChance; // If the spawn chances dictionary has the current planet
+			if (!Peeper.PeeperSpawnChances.TryGetValue(StartOfRound.Instance.currentLevel.name.ToLower().Replace("level",""), out spawnChance))
+			{
+				if (!Peeper.PeeperSpawnChances.TryGetValue("all", out spawnChance))
+				{
+					spawnChance = 0f;
+				}
+			}
+
 			float spawnRoll = UnityEngine.Random.Range(0f, 100f);
-			if (spawnRoll > Peeper.PeeperSpawnChance) { return; }
+			if (spawnRoll > spawnChance) { return; }
 
 			GameObject[] spawnPoints = GameObject.FindGameObjectsWithTag("OutsideAINode");
 			Vector3 spawnPoint = spawnPoints[__instance.AnomalyRandom.Next(0, spawnPoints.Length)].transform.position;
@@ -305,8 +332,6 @@ namespace LCPeeper
 	[HarmonyPatch(typeof(SprayPaintItem))]
 	internal class SprayPaintItemPatch
 	{
-		static FieldInfo SprayMatIndex = typeof(SprayPaintItem).GetField("sprayCanMatsIndex", BindingFlags.NonPublic | BindingFlags.Instance);
-
 		[HarmonyPatch("SprayPaintClientRpc")]
 		[HarmonyPrefix]
 		static void SprayPaintClientRpcPatch(SprayPaintItem __instance, Vector3 sprayPos, Vector3 sprayRot)
@@ -335,7 +360,7 @@ namespace LCPeeper
 
 						//    }
 						//}
-						peeper.peeperMesh.materials[0].color = __instance.sprayCanMats[(int)SprayMatIndex.GetValue(__instance)].color;
+						peeper.peeperMesh.materials[0].color = __instance.sprayCanMats[__instance.sprayCanMatsIndex].color;
 
 						if (peeper.isAttached)
 						{
@@ -453,10 +478,10 @@ namespace LCPeeper
         }
 		[HarmonyPatch("DropAllHeldItems")]
 		[HarmonyPostfix]
-		static void DamagePlayeDropAllHeldItemsPatch(PlayerControllerB __instance, bool itemsFall = true, bool disconnecting = false)
+		static void DamagePlayerDropAllHeldItemsPatch(PlayerControllerB __instance, bool itemsFall = true, bool disconnecting = false)
 		{
 			// Weight is set to 1f by the teleporter, add the Peeper weights back on!
-			if (__instance.carryWeight == 1f)
+			if (__instance.carryWeight == 1f && !__instance.isPlayerDead)
 			{
 				List<PeeperAI> allPeepers = new List<PeeperAI>(Peeper.PeeperList);
 				foreach (PeeperAI peeper in allPeepers)
@@ -649,7 +674,7 @@ namespace LCPeeper
 		}
 
 		private Vector3 deathDirection = Vector3.zero;
-		public override void HitEnemy(int force = 1, PlayerControllerB playerWhoHit = null, bool playHitSFX = false)
+		public override void HitEnemy(int force = 1, PlayerControllerB playerWhoHit = null, bool playHitSFX = false, int hitID = -1)
 		{
 			base.HitEnemy(force, playerWhoHit, false);
 			this.enemyHP -= force;
@@ -1218,16 +1243,22 @@ namespace LCPeeper
 				this.stateTimer = 0f;
 
 				if (Time.time < NextWhisperTime) { return; }
-				NextWhisperTime = Time.time + 10f;
 
                 Collider[] colliders = Physics.OverlapSphere(this.transform.position, 16f, LayerMask.GetMask("Enemies"), QueryTriggerInteraction.Collide);
                 foreach (Collider collider in colliders)
                 {
+					if (collider.gameObject.name == "MimicFrameCollider")
+					{
+						PlayCreatureSFXServerRpc(7, 1f); // whisper
+						NextWhisperTime = Time.time + UnityEngine.Random.Range(5f, 10f); // wait a bit before whispering again
+						return;
+					}
+
                     EnemyAI enemyAI = collider.gameObject.GetComponentInParent<EnemyAI>();
                     if (enemyAI != null && !Peeper.ignoreEnemies.Contains(enemyAI.enemyType.enemyName))
                     {
 						PlayCreatureSFXServerRpc(7, 1f); // whisper
-						NextWhisperTime = Time.time + UnityEngine.Random.Range(6f, 12f); // wait 10 seconds before whispering again
+						NextWhisperTime = Time.time + UnityEngine.Random.Range(8f, 16f); // wait a bit before whispering again
 						return;
 					}
                 }
@@ -1350,9 +1381,9 @@ namespace LCPeeper
 		{
 			PlayerControllerB playerScript = StartOfRound.Instance.allPlayerScripts[playerObjectId];
 			base.targetPlayer = playerScript;
-			if (base.OwnerClientId != (ulong)playerObjectId)
+			if (base.OwnerClientId != playerScript.actualClientId)
 			{
-				base.ChangeOwnershipOfEnemy((ulong)playerObjectId);
+				base.ChangeOwnershipOfEnemy(playerScript.actualClientId);
 			}
 			base.SetMovingTowardsTargetPlayer(playerScript);
 		}
@@ -1650,7 +1681,7 @@ namespace LCPeeper
 					Vector3 directionToTarget = position - peeper.eyeTransform.position;
 					float angle = Vector3.Angle(peeper.eyeOriginalTransform.forward, directionToTarget);
 
-					if (Vector3.Distance(position, peeper.eyeTransform.position) < 10f && angle < 60f && !Physics.Linecast(peeper.eyeTransform.transform.position, position, StartOfRound.Instance.collidersRoomDefaultAndFoliage, QueryTriggerInteraction.Ignore))
+					if (Vector3.Distance(position, peeper.eyeTransform.position) < 10f && angle < 90f && !Physics.Linecast(peeper.eyeTransform.transform.position, position, StartOfRound.Instance.collidersRoomDefaultAndFoliage, QueryTriggerInteraction.Ignore))
 					{
 						return true;
 					}

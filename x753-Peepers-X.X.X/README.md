@@ -11,4 +11,4 @@ https://twitter.com/Graelyth
 
 Programming by 753.
 
-https://www.patreon.com/x753
+https://753.network/

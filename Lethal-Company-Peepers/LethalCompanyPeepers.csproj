@@ -4,7 +4,7 @@
         <TargetFramework>netstandard2.1</TargetFramework>
         <AssemblyName>Peepers</AssemblyName>
         <Description>Adds a new non-lethal monster to the game with unique mechanics and interactions.</Description>
-        <Version>1.0.4</Version>
+        <Version>1.0.5</Version>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <LangVersion>latest</LangVersion>
         <RunPostBuildEvent>OnBuildSuccess</RunPostBuildEvent>

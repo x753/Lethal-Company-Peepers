@@ -18,7 +18,7 @@ namespace LCPeeper
     {
         private const string modGUID = "x753.Peepers";
         private const string modName = "Peepers";
-        private const string modVersion = "1.0.4";
+        private const string modVersion = "1.0.5";
 
         private readonly Harmony harmony = new Harmony(modGUID);
 
@@ -140,11 +140,7 @@ namespace LCPeeper
 				peeperKeyword.defaultVerb = infoKeyword;
 
 				List<CompatibleNoun> itemInfoNouns = infoKeyword.compatibleNouns.ToList();
-				itemInfoNouns.Add(new CompatibleNoun()
-				{
-					noun = peeperKeyword,
-					result = Peeper.PeeperFile
-				});
+				itemInfoNouns.Add(new CompatibleNoun(peeperKeyword, Peeper.PeeperFile));
 				infoKeyword.compatibleNouns = itemInfoNouns.ToArray();
 
 				List<TerminalKeyword> allKeywords = terminal.terminalNodes.allKeywords.ToList();
@@ -222,11 +218,7 @@ namespace LCPeeper
                 if (!level.DaytimeEnemies.Any(e => e.enemyType == Peeper.PeeperType))
                 {
                     int rarity = 0;
-                    level.DaytimeEnemies.Add(new SpawnableEnemyWithRarity()
-                    {
-                        enemyType = Peeper.PeeperType,
-                        rarity = rarity,
-                    });
+                    level.DaytimeEnemies.Add(new SpawnableEnemyWithRarity(Peeper.PeeperType, rarity));
 					return; // We're only adding peepers to this list for other mods that use this list
                 }
             }
